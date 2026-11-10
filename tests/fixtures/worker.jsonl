@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a1c60c-d992-7433-b4b0-75f5e8d2166f"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"worker fixture captured."}}
+{"type":"turn.completed","usage":{"input_tokens":14513,"cached_input_tokens":12288,"cache_write_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":0}}

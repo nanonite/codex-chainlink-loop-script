@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 
@@ -32,8 +33,18 @@ def main(name: str) -> int:
     stdout = os.environ.get("CHAINLINK_LOOP_FAKE_STDOUT", fixture.get("stdout", ""))
     stderr = os.environ.get("CHAINLINK_LOOP_FAKE_STDERR", fixture.get("stderr", ""))
     exit_code = int(os.environ.get("CHAINLINK_LOOP_FAKE_EXIT_CODE", fixture.get("exit_code", 0)))
+    last_message = fixture.get("last_message")
+    if last_message is not None:
+        args = sys.argv[1:]
+        for index, arg in enumerate(args[:-1]):
+            if arg in ("-o", "--output-last-message"):
+                Path(args[index + 1]).write_text(str(last_message), encoding="utf-8")
+                break
     sys.stdout.write(stdout)
+    sys.stdout.flush()
     sys.stderr.write(stderr)
+    sys.stderr.flush()
+    time.sleep(float(fixture.get("sleep_seconds", 0)))
     return exit_code
 
 
