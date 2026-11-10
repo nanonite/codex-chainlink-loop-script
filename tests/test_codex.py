@@ -111,13 +111,15 @@ class CodexAdapterTests(unittest.TestCase):
         events = (FIXTURES / "worker.jsonl").read_text(encoding="utf-8")
         self.configure_fake(stdout=events, last_message="partial", sleep_seconds=5)
         with patch.dict(os.environ, self.env, clear=True):
-            with self.assertRaises(codex.CodexTimeoutError):
+            with self.assertRaises(codex.CodexTimeoutError) as raised:
                 codex.run_worker(
                     "wait",
                     self.repo / "timeout.log",
                     timeout=0.2,
                     repo=self.repo,
                 )
+        expected_thread = json.loads(events.splitlines()[0])["thread_id"]
+        self.assertEqual(raised.exception.thread_id, expected_thread)
         self.assertEqual((self.repo / "timeout.log").read_text(encoding="utf-8"), events)
 
     def test_nonzero_exit_and_missing_thread_id_have_distinct_errors(self) -> None:

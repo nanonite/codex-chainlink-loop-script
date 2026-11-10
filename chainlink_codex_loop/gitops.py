@@ -215,6 +215,21 @@ class GitOps:
         self.current_issue_title = ""
         return branch
 
+    def finish_no_changes(self, issue_id: int | str) -> str:
+        """Return to base while preserving an unchanged issue branch."""
+        branch = f"chainlink/{issue_id}"
+        if self._working_changes():
+            raise DirtyWorktreeError(
+                "Cannot finish an approved-no-changes issue with working-tree changes",
+                argv=["git", "status", "--porcelain", "--untracked-files=all"],
+                exit_code=0,
+                stderr="",
+            )
+        _checked(self.repo, ["checkout", self.base])
+        self.current_issue_id = None
+        self.current_issue_title = ""
+        return branch
+
     def finish_failed(self, issue_id: int | str, outcome: str) -> str:
         branch = f"chainlink/{issue_id}"
         if self._working_changes():
@@ -223,3 +238,7 @@ class GitOps:
         self.current_issue_id = None
         self.current_issue_title = ""
         return branch
+
+    def branch_head(self, branch: str) -> str:
+        """Return the commit currently referenced by a local branch."""
+        return _checked(self.repo, ["rev-parse", branch]).strip()

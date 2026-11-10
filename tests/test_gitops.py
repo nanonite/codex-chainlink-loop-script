@@ -117,6 +117,15 @@ class GitOpsTests(unittest.TestCase):
         self.assertIn("unmerged.txt", self.run_git("ls-tree", "-r", "--name-only", branch).stdout)
         self.assertEqual(self.status(), "")
 
+    def test_no_changes_path_returns_to_base_without_creating_a_commit(self) -> None:
+        operations = GitOps(self.repo)
+        branch = operations.start_issue(17, "No changes")
+        head_before = self.run_git("rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(operations.finish_no_changes(17), branch)
+        self.assertEqual(self.current_branch(), operations.base)
+        self.assertEqual(self.run_git("rev-parse", branch).stdout.strip(), head_before)
+        self.assertEqual(self.status(), "")
+
     def test_merge_conflict_aborts_merge_and_preserves_issue_branch(self) -> None:
         operations = GitOps(self.repo)
         operations.start_issue(15, "Conflicting work")

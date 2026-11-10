@@ -231,6 +231,7 @@ class IssueLoopTests(unittest.TestCase):
             timed_out = self.run_config(timeout_repo, timeout=0.15)
         self.assertEqual(timed_out.outcome, "escalated")
         self.assertIn("timeout", timed_out.reason.lower())
+        self.assertEqual(timed_out.thread_id, json.loads(WORKER_EVENTS.splitlines()[0])["thread_id"])
 
         malformed_repo = self.make_repo("malformed")
         self.configure(101, [self.worker_response(), self.reviewer_response({}, last_message="not JSON")])

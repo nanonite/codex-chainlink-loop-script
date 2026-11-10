@@ -28,6 +28,7 @@ class CodexError(RuntimeError):
         self.argv = argv
         self.exit_code = exit_code
         self.stderr = stderr
+        self.thread_id: str | None = None
 
 
 class CodexExecutionError(CodexError):
@@ -196,14 +197,21 @@ def _read_last_message(path: Path, argv: list[str], stderr: str) -> str:
         ) from error
 
 
-def _raise_nonzero(argv: list[str], exit_code: int, stderr: str) -> None:
+def _raise_nonzero(
+    argv: list[str],
+    exit_code: int,
+    stderr: str,
+    thread_id: str | None = None,
+) -> None:
     if exit_code:
-        raise CodexExecutionError(
+        error = CodexExecutionError(
             f"Codex command failed with exit code {exit_code}",
             argv=argv,
             exit_code=exit_code,
             stderr=stderr,
         )
+        error.thread_id = thread_id
+        raise error
 
 
 def run_worker(
@@ -227,15 +235,19 @@ def run_worker(
         if thread_id:
             thread_ids.append(thread_id)
 
-    exit_code, stderr = _stream_command(
-        argv,
-        prompt,
-        repo=repo or Path.cwd(),
-        log_path=log,
-        timeout=timeout,
-        on_stdout_line=parse_line,
-    )
-    _raise_nonzero(argv, exit_code, stderr)
+    try:
+        exit_code, stderr = _stream_command(
+            argv,
+            prompt,
+            repo=repo or Path.cwd(),
+            log_path=log,
+            timeout=timeout,
+            on_stdout_line=parse_line,
+        )
+    except CodexTimeoutError as error:
+        error.thread_id = thread_ids[0] if thread_ids else None
+        raise
+    _raise_nonzero(argv, exit_code, stderr, thread_ids[0] if thread_ids else None)
     if not thread_ids:
         raise CodexMissingThreadIdError(
             "Codex worker output did not contain a thread.started event with thread_id",
@@ -268,15 +280,19 @@ def resume_worker(
         if resumed_id:
             resumed_ids.append(resumed_id)
 
-    exit_code, stderr = _stream_command(
-        argv,
-        prompt,
-        repo=repo or Path.cwd(),
-        log_path=log,
-        timeout=timeout,
-        on_stdout_line=parse_line,
-    )
-    _raise_nonzero(argv, exit_code, stderr)
+    try:
+        exit_code, stderr = _stream_command(
+            argv,
+            prompt,
+            repo=repo or Path.cwd(),
+            log_path=log,
+            timeout=timeout,
+            on_stdout_line=parse_line,
+        )
+    except CodexTimeoutError as error:
+        error.thread_id = thread_id
+        raise
+    _raise_nonzero(argv, exit_code, stderr, thread_id)
     if not resumed_ids:
         raise CodexMissingThreadIdError(
             "Codex resume output did not contain a thread.started event with thread_id",
