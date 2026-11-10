@@ -96,6 +96,31 @@ def ready(repo: str | Path = DEFAULT_REPO) -> list[dict[str, Any]]:
     return issues
 
 
+def list_issues(
+    label: str | None = None,
+    priority: str | None = None,
+    status: str = "open",
+    repo: str | Path = DEFAULT_REPO,
+) -> list[dict[str, Any]]:
+    """List issues with Chainlink's server-side label/priority filters."""
+    args = ["issue", "list", "--json"]
+    if label is not None:
+        args.extend(["-l", label])
+    if priority is not None:
+        args.extend(["-p", priority])
+    if status is not None:
+        args.extend(["-s", status])
+    issues = _json(args, repo)
+    if not isinstance(issues, list) or any(not isinstance(item, dict) for item in issues):
+        raise ChainlinkError(
+            "Chainlink issue list returned an invalid JSON list",
+            argv=["chainlink", *args],
+            exit_code=0,
+            stderr="",
+        )
+    return issues
+
+
 def comment(
     issue_id: int | str,
     text: str,
