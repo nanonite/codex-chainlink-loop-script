@@ -243,12 +243,16 @@ def print_transition(message: str, stream: TextIO = sys.stdout) -> None:
 
 
 def format_summary(outcomes: Iterable[Any]) -> str:
+    def concise_reason(outcome: Any) -> str:
+        reason = str(getattr(outcome, "reason", "") or "")
+        return reason if len(reason) <= 72 else reason[:69] + "..."
+
     rows = [
         (
             str(getattr(outcome, "outcome", "unknown")),
             str(getattr(outcome, "attempts_used", "")),
             str(getattr(outcome, "branch_name", "") or ""),
-            str(getattr(outcome, "reason", "") or ""),
+            concise_reason(outcome),
         )
         for outcome in outcomes
     ]

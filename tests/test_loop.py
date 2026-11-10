@@ -131,13 +131,21 @@ class IssueLoopTests(unittest.TestCase):
             ],
         )
         progress: list[str] = []
+        transitions: list[tuple[object, ...]] = []
         with patch.dict(os.environ, self.env, clear=True):
-            result = self.run_config(repo, attempts=3, verify="exit 0", progress=progress.append)
+            result = self.run_config(
+                repo,
+                attempts=3,
+                verify="exit 0",
+                progress=progress.append,
+                transition=lambda *values: transitions.append(values),
+            )
         self.assertEqual(result.outcome, "done")
         self.assertEqual(result.attempts_used, 1)
         self.assertEqual(result.thread_id, json.loads(WORKER_EVENTS.splitlines()[0])["thread_id"])
         self.assertEqual(result.branch_name, "chainlink/101")
         self.assertIsNone(result.reason)
+        self.assertEqual(transitions[0], (101, "worker", 1, None))
         self.assertEqual(self.git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip(), "chainlink/101")
         self.assertTrue(any("attempt 1/3" in message for message in progress))
         log_dir = repo / ".chainlink-loop" / "logs" / "101"

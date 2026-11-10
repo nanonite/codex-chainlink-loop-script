@@ -128,6 +128,11 @@ class RunStateTests(unittest.TestCase):
         self.assertEqual(process_exit_code(successes, precondition_error=True), 2)
         self.assertEqual(process_exit_code(failed, interrupted=True), 130)
 
+        long_failure = Outcome("escalated", 2, "t4", None, "x" * 150, "chainlink/4")
+        concise = format_summary([long_failure])
+        self.assertIn("x" * 69 + "...", concise)
+        self.assertLessEqual(max(map(len, concise.splitlines())), 120)
+
 
 class InterruptIntegrationTests(unittest.TestCase):
     def test_sigint_kills_codex_group_records_interrupted_and_releases_both_locks(self) -> None:

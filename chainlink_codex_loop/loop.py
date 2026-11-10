@@ -119,7 +119,7 @@ def run_issue(
         if on_issue_started is not None:
             on_issue_started(issue, git, branch_name)
         _notify(config, f"issue #{issue_id}: starting worker on {branch_name}")
-        _transition(config, issue_id, "worker", 0, None)
+        _transition(config, issue_id, "worker", 1, None)
         worker = codex.run_worker(
             worker_prompt(issue),
             _log_path(repo, issue_id, "worker", 1),
