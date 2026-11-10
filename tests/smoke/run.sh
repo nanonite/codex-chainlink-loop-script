@@ -106,7 +106,7 @@ assert unblocked_id not in ready, f"blocked issue was ready before its blocker c
 PY
 
 verify_command="python3 -c 'import subprocess,sys; branch=subprocess.check_output([\"git\",\"branch\",\"--show-current\"],text=True).strip(); failing=branch == \"chainlink/${verify_id}\"; print(\"intentional verification failure\" if failing else \"running unittest\"); sys.exit(1 if failing else subprocess.call([\"python3\",\"-m\",\"unittest\",\"-q\"]))'"
-args=("--repo" "$repo" "--backlog" "--attempts" "2" "--verify" "$verify_command")
+args=("--repo" "$repo" "--base" "main" "--backlog" "--attempts" "2" "--verify" "$verify_command")
 if [[ -n "${CODEX_LOOP_SMOKE_MODEL:-}" ]]; then
   args+=("--model" "$CODEX_LOOP_SMOKE_MODEL" "--reviewer-model" "$CODEX_LOOP_SMOKE_MODEL")
 fi

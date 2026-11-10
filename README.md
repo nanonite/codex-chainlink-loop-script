@@ -33,26 +33,26 @@ Set `TARGET_REPO` to the absolute path of the repository whose issues Codex shou
 Preview one issue first. Dry-run checks preconditions and selects issues, but does not start Codex, create branches, claim issue locks, write comments, close issues, or create `.chainlink-loop/` state.
 
 ```sh
-chainlink-codex-loop --repo "$TARGET_REPO" --dry-run 123
+chainlink-codex-loop --repo "$TARGET_REPO" --base main --dry-run 123
 ```
 
 Then run that issue:
 
 ```sh
-chainlink-codex-loop --repo "$TARGET_REPO" 123
+chainlink-codex-loop --repo "$TARGET_REPO" --base main 123
 ```
 
 Run several explicit IDs in the order given, with a verification command:
 
 ```sh
-chainlink-codex-loop --repo "$TARGET_REPO" --attempts 3 --verify 'python3 -m unittest discover -s tests' 123 124
+chainlink-codex-loop --repo "$TARGET_REPO" --base main --attempts 3 --verify 'python3 -m unittest discover -s tests' 123 124
 ```
 
 Select up to five ready issues with filters. Preview before removing `--dry-run` to start work:
 
 ```sh
-chainlink-codex-loop --repo "$TARGET_REPO" --backlog --label backend --priority high --max-issues 5 --dry-run
-chainlink-codex-loop --repo "$TARGET_REPO" --backlog --label backend --priority high --max-issues 5
+chainlink-codex-loop --repo "$TARGET_REPO" --base main --backlog --label backend --priority high --max-issues 5 --dry-run
+chainlink-codex-loop --repo "$TARGET_REPO" --base main --backlog --label backend --priority high --max-issues 5
 ```
 
 Backlog mode refreshes Chainlink's ready list after each issue, so closing one issue can make a blocked issue eligible later in the same run. Normal runs skip issues locked by another agent and do not retry an issue already attempted during the current run. Dry-run does not query remote issue locks: Chainlink 0.2.0's lock listing may fetch and write its Git-backed lock cache. A preview can therefore include an issue that another agent currently holds.
@@ -71,7 +71,7 @@ This is the flag set printed by `chainlink-codex-loop --help`:
 | `--max-issues N` | Stop after selecting at most N issues. Applies to explicit and backlog selection. |
 | `--attempts N` | Maximum worker/verify/review rounds per issue. Defaults to 3. |
 | `--verify CMD` | Run this shell command in the target repo after each worker turn. A nonzero result is sent back to that issue's worker session. |
-| `--base BRANCH` | Local base branch. Defaults to the branch checked out when the run starts; the loop resolves it once, prints it, and uses it for every issue. A checked-out `chainlink/<id>` branch is refused as an implicit base. |
+| `--base BRANCH` | Required. Local branch that every issue branch starts from and that `done` work merges into. It is never inferred from the checked-out branch. The loop checks it out when it finishes each issue. |
 | `--no-merge` | Commit approved changes on the issue branch but do not merge them into the base branch. A `done` issue is still recorded and closed. |
 | `--model M` | Codex model for worker turns. Defaults to the Codex CLI configuration. |
 | `--reviewer-model M` | Codex model for fresh reviewer turns. Defaults to the Codex CLI configuration. |

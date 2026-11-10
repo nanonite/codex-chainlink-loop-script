@@ -41,7 +41,11 @@ class ScaffoldTests(unittest.TestCase):
             self.assertEqual(record["stdin"], "prompt body")
 
     def test_cli_requires_ids_or_backlog(self) -> None:
-        cases = (([], "provide one or more IDs"), (["--backlog", "17"], "cannot be combined"))
+        cases = (
+            (["--base", "main"], "provide one or more IDs"),
+            (["--base", "main", "--backlog", "17"], "cannot be combined"),
+            (["17"], "required: --base"),
+        )
         for arguments, expected_error in cases:
             with self.subTest(arguments=arguments):
                 command = subprocess.run(

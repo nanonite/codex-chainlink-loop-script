@@ -43,7 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-issues", type=int, metavar="N")
     parser.add_argument("--attempts", type=int, default=3, metavar="N")
     parser.add_argument("--verify", metavar="CMD")
-    parser.add_argument("--base", metavar="BRANCH")
+    parser.add_argument(
+        "--base",
+        required=True,
+        metavar="BRANCH",
+        help="local branch that issue branches start from and approved work merges into (required)",
+    )
     parser.add_argument("--no-merge", action="store_true")
     parser.add_argument("--model", metavar="M")
     parser.add_argument("--reviewer-model", metavar="M")

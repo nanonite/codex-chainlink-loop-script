@@ -115,7 +115,9 @@ class CliIntegrationTests(unittest.TestCase):
         stderr = StringIO()
         with patch.dict(os.environ, self.env, clear=True):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                code = main(["--repo", str(self.repo), *args])
+                base = [] if "--base" in args or "--omit-base" in args else ["--base", "main"]
+                argv = [arg for arg in args if arg != "--omit-base"]
+                code = main(["--repo", str(self.repo), *base, *argv])
         return code, stdout.getvalue(), stderr.getvalue()
 
     def test_dry_run_is_read_only_and_prints_exact_worker_and_reviewer_argv(self) -> None:
@@ -280,7 +282,7 @@ class CliIntegrationTests(unittest.TestCase):
     def test_timeout_defaults_to_an_hour_and_zero_disables_it(self) -> None:
         from chainlink_codex_loop import cli
 
-        self.assertEqual(cli.parse_args(["1"]).timeout, 3600)
+        self.assertEqual(cli.parse_args(["--base", "main", "1"]).timeout, 3600)
         with patch("chainlink_codex_loop.cli.run_and_record") as run_and_record:
             run_and_record.return_value = None
             for flags, expected in (([], 3600), (["--timeout", "0"], None), (["--timeout", "5"], 5)):
@@ -303,12 +305,14 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 0, f"stdout={output}\nstderr={stderr}")
         self.assertIn("Base branch: main", output)
 
-        self.git("checkout", "-b", "chainlink/801")
-        code, _output, stderr = self.invoke(["--dry-run", "801"])
+        # The base is never inferred from the checked-out branch.
+        with self.assertRaises(SystemExit) as missing:
+            self.invoke(["--omit-base", "--dry-run", "801"])
+        self.assertEqual(missing.exception.code, 2)
+
+        code, _output, stderr = self.invoke(["--base", "no-such-branch", "--dry-run", "801"])
         self.assertEqual(code, 2)
-        self.assertIn("pass --base", stderr)
-        self.git("checkout", "main")
-        self.git("branch", "-D", "chainlink/801")
+        self.assertIn("no-such-branch", stderr)
 
 
 if __name__ == "__main__":
