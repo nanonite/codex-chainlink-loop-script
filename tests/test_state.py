@@ -128,6 +128,16 @@ class RunStateTests(unittest.TestCase):
         self.assertEqual(process_exit_code(successes, precondition_error=True), 2)
         self.assertEqual(process_exit_code(failed, interrupted=True), 130)
 
+        identified = format_summary(
+            [
+                Outcome("escalated", 0, None, None, "dirty", None, issue_id=7),
+                Outcome("escalated", 0, None, None, "dirty", None, issue_id=8),
+            ]
+        )
+        self.assertTrue(identified.splitlines()[0].startswith("Issue"))
+        self.assertTrue(identified.splitlines()[2].startswith("#7"))
+        self.assertTrue(identified.splitlines()[3].startswith("#8"))
+
         long_failure = Outcome("escalated", 2, "t4", None, "x" * 150, "chainlink/4")
         concise = format_summary([long_failure])
         self.assertIn("x" * 69 + "...", concise)

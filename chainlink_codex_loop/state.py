@@ -247,8 +247,13 @@ def format_summary(outcomes: Iterable[Any]) -> str:
         reason = str(getattr(outcome, "reason", "") or "")
         return reason if len(reason) <= 72 else reason[:69] + "..."
 
+    def issue_label(outcome: Any) -> str:
+        issue_id = getattr(outcome, "issue_id", None)
+        return "" if issue_id is None else f"#{issue_id}"
+
     rows = [
         (
+            issue_label(outcome),
             str(getattr(outcome, "outcome", "unknown")),
             str(getattr(outcome, "attempts_used", "")),
             str(getattr(outcome, "branch_name", "") or ""),
@@ -256,12 +261,13 @@ def format_summary(outcomes: Iterable[Any]) -> str:
         )
         for outcome in outcomes
     ]
-    headers = ("Outcome", "Attempts", "Branch", "Reason")
-    widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) if rows else len(headers[index]) for index in range(4)]
+    headers = ("Issue", "Outcome", "Attempts", "Branch", "Reason")
+    columns = range(len(headers))
+    widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) if rows else len(headers[index]) for index in columns]
     separator = "  "
-    lines = [separator.join(headers[i].ljust(widths[i]) for i in range(4))]
+    lines = [separator.join(headers[i].ljust(widths[i]) for i in columns)]
     lines.append(separator.join("-" * width for width in widths))
-    lines.extend(separator.join(row[i].ljust(widths[i]) for i in range(4)) for row in rows)
+    lines.extend(separator.join(row[i].ljust(widths[i]) for i in columns) for row in rows)
     return "\n".join(lines)
 
 

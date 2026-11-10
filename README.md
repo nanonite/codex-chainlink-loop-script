@@ -71,11 +71,11 @@ This is the flag set printed by `chainlink-codex-loop --help`:
 | `--max-issues N` | Stop after selecting at most N issues. Applies to explicit and backlog selection. |
 | `--attempts N` | Maximum worker/verify/review rounds per issue. Defaults to 3. |
 | `--verify CMD` | Run this shell command in the target repo after each worker turn. A nonzero result is sent back to that issue's worker session. |
-| `--base BRANCH` | Local base branch. Defaults to the branch checked out when the run starts. |
+| `--base BRANCH` | Local base branch. Defaults to the branch checked out when the run starts; the loop resolves it once, prints it, and uses it for every issue. A checked-out `chainlink/<id>` branch is refused as an implicit base. |
 | `--no-merge` | Commit approved changes on the issue branch but do not merge them into the base branch. A `done` issue is still recorded and closed. |
 | `--model M` | Codex model for worker turns. Defaults to the Codex CLI configuration. |
 | `--reviewer-model M` | Codex model for fresh reviewer turns. Defaults to the Codex CLI configuration. |
-| `--timeout SECONDS` | Timeout for Codex and verification commands. Defaults to no timeout. |
+| `--timeout SECONDS` | Limit for each Codex run and each verification run. Defaults to 3600. `0` disables the limit. |
 | `--dry-run` | Perform read-only preflight and selection, then print the proposed branch and worker/reviewer argv. Dirty trees are reported as warnings. |
 | `-h`, `--help` | Print the flag list and exit. |
 
@@ -127,7 +127,7 @@ Exit codes are:
 | ---: | --- |
 | `0` | Every attempted issue ended `done` or `approved-no-changes`, or nothing was eligible. |
 | `1` | At least one issue ended `verify-failed` or `escalated`. |
-| `2` | Invalid usage or a preflight/setup error, such as a dirty tree or held workspace lock. |
+| `2` | Invalid usage or a preflight/setup error, such as a dirty tree or held workspace lock. Also returned when the run stops early because an issue left the repository off the base branch or with uncommitted changes. |
 | `130` | The run was interrupted by SIGINT or SIGTERM. |
 
 ## Safety notes
@@ -146,6 +146,8 @@ Exit codes are:
 - **Chainlink lock warnings:** Chainlink can print warnings to stderr even when JSON is enabled. The adapter parses JSON from stdout only. If lock claiming is explicitly unavailable, the loop continues without an issue lock. If backlog selection cannot query lock ownership, it skips that issue and still uses the workspace lock for work it does start.
 - **`verify-failed`:** the issue remains open, and the branch is saved with any WIP changes. The blocker comment and `verify-<attempt>.log` show the command result. Fix the work or verify command and run the issue again.
 - **`escalated`:** inspect the blocker comment, state reason, worker thread ID, and attempt logs. Resume the worker manually with `codex resume THREAD_ID` or run the loop again after addressing the blocker.
+- **Commit hook rejects the work:** if a pre-commit hook rejects an approved issue's commit, the issue ends `escalated` with the hook's output in the blocker comment. The work is saved as a WIP commit made with `--no-verify` on the issue branch, which is never merged, and the loop carries on from a clean base branch.
+- **"stopping after issue #N":** after every issue the loop checks that the base branch is checked out and the tree is clean. If not, it stops with exit code 2 rather than failing every remaining issue. Repair the repository and rerun the remaining issues.
 - **Smoke-test behavior:** `tests/smoke/run.sh` uses a temporary repo and real Codex/Chainlink binaries; it spends model tokens. An optional `CODEX_LOOP_SMOKE_MODEL` selects the worker and reviewer model. The smoke scenario deliberately makes issue #2's verification fail on its branch, so the loop returns 1 while the smoke script itself exits 0 after validating the expected outcomes.
 
 Run the full fake-based suite with:

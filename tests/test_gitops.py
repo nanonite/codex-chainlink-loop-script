@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from chainlink_codex_loop import gitops
 from chainlink_codex_loop.gitops import (
     DetachedHeadError,
     DirtyWorktreeError,
@@ -158,6 +159,60 @@ class GitOpsTests(unittest.TestCase):
         subject = self.run_git("show", "-s", "--format=%s", branch).stdout.strip()
         self.assertEqual(subject, "WIP chainlink #16 (escalated)")
         self.assertEqual(self.status(), "")
+
+    def reject_commits_with_hook(self) -> None:
+        hook = self.repo / ".git" / "hooks" / "pre-commit"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text("#!/bin/sh\necho 'lint failed' >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+    def test_failed_path_survives_a_rejecting_commit_hook(self) -> None:
+        operations = GitOps(self.repo)
+        operations.start_issue(17, "Hook rejects work")
+        (self.repo / "wip.txt").write_text("keep this\n", encoding="utf-8")
+        self.reject_commits_with_hook()
+
+        branch = operations.finish_failed(17, "escalated")
+
+        self.assertEqual(self.current_branch(), operations.base)
+        self.assertEqual(self.status(), "")
+        self.assertIn("wip.txt", self.run_git("ls-tree", "-r", "--name-only", branch).stdout)
+        self.assertIsNone(gitops.workspace_problem(self.repo, operations.base))
+
+    def test_done_path_reports_a_rejecting_commit_hook_and_can_still_fail_cleanly(self) -> None:
+        operations = GitOps(self.repo)
+        operations.start_issue(18, "Hook rejects approved work")
+        (self.repo / "feature.txt").write_text("approved\n", encoding="utf-8")
+        self.reject_commits_with_hook()
+
+        with self.assertRaises(gitops.GitError):
+            operations.finish_done(18, title="Hook rejects approved work")
+        operations.finish_failed(18, "escalated")
+
+        self.assertEqual(self.current_branch(), operations.base)
+        self.assertEqual(self.status(), "")
+        self.assertFalse((self.repo / "feature.txt").exists())
+
+    def test_workspace_problem_names_wrong_branch_and_dirty_tree(self) -> None:
+        operations = GitOps(self.repo)
+        base = operations.base
+        self.assertIsNone(gitops.workspace_problem(self.repo, base))
+
+        (self.repo / "stray.txt").write_text("stray\n", encoding="utf-8")
+        self.assertIn("stray.txt", gitops.workspace_problem(self.repo, base) or "")
+        (self.repo / "stray.txt").unlink()
+
+        operations.start_issue(19, "Stranded")
+        self.assertIn("chainlink/19", gitops.workspace_problem(self.repo, base) or "")
+
+    def test_issue_branch_is_refused_as_an_implicit_base(self) -> None:
+        operations = GitOps(self.repo)
+        base = operations.base
+        operations.start_issue(20, "Stranded")
+
+        with self.assertRaises(gitops.GitError):
+            gitops.base_branch(self.repo)
+        self.assertEqual(gitops.base_branch(self.repo, base), base)
 
     def test_detached_head_is_an_error_even_when_base_is_requested(self) -> None:
         self.run_git("checkout", "--detach", "HEAD")

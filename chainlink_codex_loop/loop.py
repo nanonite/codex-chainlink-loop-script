@@ -42,6 +42,7 @@ class Outcome:
     reason: str | None
     branch_name: str | None
     verify_output_tail: str | None = None
+    issue_id: int | str | None = None
 
 
 def _notify(config: LoopConfig, message: str) -> None:

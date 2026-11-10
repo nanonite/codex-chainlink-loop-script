@@ -122,7 +122,18 @@ def base_branch(repo: str | Path, requested: str | None = None) -> str:
             stderr=current_stderr,
         )
     if requested is None:
-        return current.strip()
+        current_name = current.strip()
+        if current_name.startswith("chainlink/"):
+            # A loop issue branch is checked out, which means an earlier run did
+            # not get back to its base. Merging new work here would be wrong.
+            raise GitError(
+                f"Issue branch {current_name!r} is checked out; check out the intended "
+                "base branch or pass --base",
+                argv=["git", "symbolic-ref", "--quiet", "--short", "HEAD"],
+                exit_code=0,
+                stderr="",
+            )
+        return current_name
 
     _checked(repo, ["check-ref-format", "--branch", requested])
     code, _stdout, stderr = _git(repo, ["show-ref", "--verify", "--quiet", f"refs/heads/{requested}"])
@@ -135,6 +146,21 @@ def base_branch(repo: str | Path, requested: str | None = None) -> str:
             stderr=stderr,
         )
     return requested
+
+
+def workspace_problem(repo: str | Path, base: str) -> str | None:
+    """Describe why the next issue cannot start cleanly from ``base``, if it cannot."""
+    try:
+        code, current, _stderr = _git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+        current_name = current.strip() if code == 0 else "a detached HEAD"
+        if current_name != base:
+            return f"{current_name} is checked out instead of base branch {base}"
+        dirty = _status_paths(repo)
+    except (GitError, OSError) as error:
+        return f"could not inspect the repository: {error}"
+    if dirty:
+        return "the work tree has uncommitted changes: " + ", ".join(dirty)
+    return None
 
 
 class GitOps:
@@ -185,7 +211,7 @@ class GitOps:
     def _working_changes(self) -> bool:
         return bool(_status_paths(self.repo))
 
-    def commit_all(self, message: str) -> bool:
+    def commit_all(self, message: str, *, no_verify: bool = False) -> bool:
         _checked(self.repo, ["add", "-A"])
         code, _stdout, stderr = _git(self.repo, ["diff", "--cached", "--quiet"])
         if code == 0:
@@ -198,7 +224,10 @@ class GitOps:
                 exit_code=code,
                 stderr=stderr,
             )
-        _checked(self.repo, ["commit", "-m", message])
+        commit_args = ["commit", "-m", message]
+        if no_verify:
+            commit_args.append("--no-verify")
+        _checked(self.repo, commit_args)
         return True
 
     def finish_done(
@@ -248,7 +277,13 @@ class GitOps:
     def finish_failed(self, issue_id: int | str, outcome: str) -> str:
         branch = f"chainlink/{issue_id}"
         if self._working_changes():
-            self.commit_all(f"WIP chainlink #{issue_id} ({outcome})")
+            message = f"WIP chainlink #{issue_id} ({outcome})"
+            try:
+                self.commit_all(message)
+            except GitError:
+                # A commit hook rejecting unfinished work must not strand the
+                # loop on the issue branch: the WIP commit never reaches base.
+                self.commit_all(message, no_verify=True)
         _checked(self.repo, ["checkout", self.base])
         self.current_issue_id = None
         self.current_issue_title = ""

@@ -13,7 +13,9 @@ from typing import Sequence
 from . import backlog, codex
 from .backlog import SelectionConfig
 from .chainlink import ChainlinkError
-from .gitops import DirtyWorktreeError, GitError, base_branch, ensure_clean
+from dataclasses import replace
+
+from .gitops import DirtyWorktreeError, GitError, base_branch, ensure_clean, workspace_problem
 from .loop import LoopConfig, Outcome, run_and_record
 from .state import (
     InterruptController,
@@ -23,6 +25,9 @@ from .state import (
     print_summary,
     process_exit_code,
 )
+
+
+DEFAULT_TIMEOUT_SECONDS = 3600.0
 
 
 def _progress(message: str) -> None:
@@ -42,7 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-merge", action="store_true")
     parser.add_argument("--model", metavar="M")
     parser.add_argument("--reviewer-model", metavar="M")
-    parser.add_argument("--timeout", type=float, metavar="SECONDS")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "limit for each Codex run and each verify run "
+            f"(default {DEFAULT_TIMEOUT_SECONDS:g}; 0 disables the limit)"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("ids", nargs="*", metavar="ID")
     return parser
@@ -102,8 +116,8 @@ def _preflight(args: argparse.Namespace) -> tuple[list[str], list[str]]:
         errors.append("--attempts must be at least 1")
     if args.max_issues is not None and args.max_issues < 1:
         errors.append("--max-issues must be at least 1")
-    if args.timeout is not None and args.timeout <= 0:
-        errors.append("--timeout must be greater than 0")
+    if args.timeout is not None and args.timeout < 0:
+        errors.append("--timeout must be 0 (no limit) or greater")
     if args.priority is not None and args.priority not in backlog.PRIORITY_ORDER:
         errors.append(f"unknown priority {args.priority!r}; use critical, high, medium, or low")
     return errors, warnings
@@ -159,21 +173,34 @@ def _dry_run(args: argparse.Namespace) -> int:
     except (ChainlinkError, ValueError, OSError) as error:
         print(f"error: could not select issues: {error}", file=sys.stderr)
         return 2
+    try:
+        print(f"Base branch: {base_branch(args.repo, args.base)}")
+    except (GitError, OSError) as error:
+        print(f"error: invalid base branch: {error}", file=sys.stderr)
+        return 2
     print("Remote Chainlink issue locks: not checked during dry-run.")
     _print_preview(args, issues)
     return 0
 
 
 def _run(args: argparse.Namespace) -> int:
+    # Resolve the base once. Re-deriving it from HEAD for every issue would let a
+    # run that got stranded on an issue branch stack later issues on top of it.
+    try:
+        base = base_branch(args.repo, args.base)
+    except (GitError, OSError) as error:
+        print(f"error: invalid base branch: {error}", file=sys.stderr)
+        return 2
+    _progress(f"base branch: {base}")
     config = LoopConfig(
         repo=args.repo,
         attempts=args.attempts,
         verify=args.verify,
-        base=args.base,
+        base=base,
         no_merge=args.no_merge,
         model=args.model,
         reviewer_model=args.reviewer_model,
-        timeout=args.timeout,
+        timeout=args.timeout or None,
         progress=_progress,
     )
     state = RunState(args.repo)
@@ -213,12 +240,24 @@ def _run(args: argparse.Namespace) -> int:
                         outcome = run_and_record(issue_id, config)
                         if outcome is None:
                             continue
+                        outcome = replace(outcome, issue_id=issue_id)
                         outcomes.append(outcome)
                         state.finish_issue(issue_id, outcome)
                         _progress(
                             f"issue #{issue_id}: phase=finished attempt={outcome.attempts_used} "
                             f"outcome={outcome.outcome}"
                         )
+                        problem = workspace_problem(args.repo, base)
+                        if problem is not None:
+                            # Every later issue would fail the clean-tree check and
+                            # collect a meaningless blocker comment, so stop here.
+                            print(
+                                f"error: stopping after issue #{issue_id}: {problem}. "
+                                "Repair the repository, then rerun the remaining issues.",
+                                file=sys.stderr,
+                            )
+                            runtime_error = True
+                            break
                 except (ChainlinkError, ValueError, OSError) as error:
                     print(f"error: could not continue issue selection: {error}", file=sys.stderr)
                     runtime_error = True

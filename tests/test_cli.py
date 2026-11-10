@@ -231,6 +231,85 @@ class CliIntegrationTests(unittest.TestCase):
             [item["outcome"] for item in state["finished_issues"]], ["done", "escalated"]
         )
 
+    def test_run_stops_instead_of_blocking_every_issue_when_repo_is_left_broken(self) -> None:
+        first = self.issue(501, "Leaves the repository broken")
+        second = self.issue(502, "Must not be touched")
+        no_locks = self.response({"locks": {}})
+        chainlink = [
+            self.response(first), no_locks,
+            {"stdout": "claimed"}, {"stdout": "session work"}, self.response(first),
+            {"stdout": "plan"}, {"stdout": "thread plan"}, {"stdout": "resolution"},
+            {"stdout": "closed"}, {"stdout": "released"},
+        ]
+        approved = {"verdict": "approved", "summary": "Fine.", "findings": []}
+        codex = [self.worker(write_files={"first.txt": "work\n"}), self.reviewer(approved)]
+        self.configure(chainlink=chainlink, codex=codex)
+
+        with patch(
+            "chainlink_codex_loop.cli.workspace_problem",
+            return_value="chainlink/501 is checked out instead of base branch main",
+        ):
+            code, output, stderr = self.invoke(["501", "502"])
+
+        self.assertEqual(code, 2, f"stdout={output}\nstderr={stderr}")
+        self.assertIn("stopping after issue #501", stderr)
+        self.assertNotIn("issue #502", output)
+        calls = [record["argv"] for record in self.chainlink_records()]
+        self.assertFalse([argv for argv in calls if "502" in argv])
+        self.assertEqual(len(self.codex_records()), 2)
+
+    def test_summary_identifies_issues_and_base_branch_is_announced(self) -> None:
+        issue = self.issue(601, "Approved issue")
+        no_locks = self.response({"locks": {}})
+        chainlink = [
+            self.response(issue), no_locks,
+            {"stdout": "claimed"}, {"stdout": "session work"}, self.response(issue),
+            {"stdout": "plan"}, {"stdout": "thread plan"}, {"stdout": "resolution"},
+            {"stdout": "closed"}, {"stdout": "released"},
+        ]
+        approved = {"verdict": "approved", "summary": "Fine.", "findings": []}
+        codex = [self.worker(write_files={"first.txt": "work\n"}), self.reviewer(approved)]
+        self.configure(chainlink=chainlink, codex=codex)
+
+        code, output, stderr = self.invoke(["601"])
+
+        self.assertEqual(code, 0, f"stdout={output}\nstderr={stderr}")
+        self.assertIn("base branch: main", output)
+        self.assertRegex(output, r"(?m)^#601\s+done\b")
+
+    def test_timeout_defaults_to_an_hour_and_zero_disables_it(self) -> None:
+        from chainlink_codex_loop import cli
+
+        self.assertEqual(cli.parse_args(["1"]).timeout, 3600)
+        with patch("chainlink_codex_loop.cli.run_and_record") as run_and_record:
+            run_and_record.return_value = None
+            for flags, expected in (([], 3600), (["--timeout", "0"], None), (["--timeout", "5"], 5)):
+                # The fakes replay responses by call count, so start each run fresh.
+                shutil.rmtree(self.records, ignore_errors=True)
+                run_and_record.reset_mock()
+                issue = self.issue(701, "Timeout check")
+                self.configure(chainlink=[self.response(issue), self.response({"locks": {}})])
+                code, output, stderr = self.invoke([*flags, "701"])
+                self.assertEqual(code, 0, f"stdout={output}\nstderr={stderr}")
+                self.assertEqual(run_and_record.call_args.args[1].timeout, expected)
+        code, _output, stderr = self.invoke(["--timeout", "-1", "701"])
+        self.assertEqual(code, 2)
+        self.assertIn("--timeout", stderr)
+
+    def test_dry_run_prints_base_branch_and_refuses_issue_branch_as_base(self) -> None:
+        issue = self.issue(801, "Preview")
+        self.configure(chainlink=[self.response(issue)])
+        code, output, stderr = self.invoke(["--dry-run", "801"])
+        self.assertEqual(code, 0, f"stdout={output}\nstderr={stderr}")
+        self.assertIn("Base branch: main", output)
+
+        self.git("checkout", "-b", "chainlink/801")
+        code, _output, stderr = self.invoke(["--dry-run", "801"])
+        self.assertEqual(code, 2)
+        self.assertIn("pass --base", stderr)
+        self.git("checkout", "main")
+        self.git("branch", "-D", "chainlink/801")
+
 
 if __name__ == "__main__":
     unittest.main()
