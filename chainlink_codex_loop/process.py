@@ -26,6 +26,7 @@ def run(
             argv,
             cwd=cwd,
             shell=True,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -35,6 +36,9 @@ def run(
             list(argv),
             cwd=cwd,
             shell=False,
+            # Never let a child wait on the loop's own stdin: an unattended run
+            # would hang on any command that reads it.
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
