@@ -12,6 +12,7 @@ from pathlib import Path
 
 def main(name: str) -> int:
     record_dir = os.environ.get("CHAINLINK_LOOP_FAKE_DIR")
+    invocation = 0
     entry = {
         "argv": sys.argv[1:],
         "cwd": os.getcwd(),
@@ -21,6 +22,8 @@ def main(name: str) -> int:
         path = Path(record_dir)
         path.mkdir(parents=True, exist_ok=True)
         records = path / f"{name}.jsonl"
+        if records.exists():
+            invocation = len(records.read_text(encoding="utf-8").splitlines())
         with records.open("a", encoding="utf-8") as output:
             output.write(json.dumps(entry) + "\n")
 
@@ -30,6 +33,14 @@ def main(name: str) -> int:
         fixture = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
         if name in fixture and isinstance(fixture[name], dict):
             fixture = fixture[name]
+    responses = fixture.get("responses")
+    if isinstance(responses, list) and invocation < len(responses) and isinstance(responses[invocation], dict):
+        fixture = {**fixture, **responses[invocation]}
+
+    for relative_path, content in fixture.get("write_files", {}).items():
+        path = Path(os.getcwd()) / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(content), encoding="utf-8")
     stdout = os.environ.get("CHAINLINK_LOOP_FAKE_STDOUT", fixture.get("stdout", ""))
     stderr = os.environ.get("CHAINLINK_LOOP_FAKE_STDERR", fixture.get("stderr", ""))
     exit_code = int(os.environ.get("CHAINLINK_LOOP_FAKE_EXIT_CODE", fixture.get("exit_code", 0)))
