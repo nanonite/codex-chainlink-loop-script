@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ def main(name: str) -> int:
     entry = {
         "argv": sys.argv[1:],
         "cwd": os.getcwd(),
+        "pid": os.getpid(),
         "stdin": sys.stdin.read(),
     }
     if record_dir:
@@ -36,6 +38,14 @@ def main(name: str) -> int:
     responses = fixture.get("responses")
     if isinstance(responses, list) and invocation < len(responses) and isinstance(responses[invocation], dict):
         fixture = {**fixture, **responses[invocation]}
+
+    if fixture.get("spawn_child") and record_dir:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=os.getcwd(),
+            start_new_session=False,
+        )
+        Path(record_dir, "codex-child.pid").write_text(str(child.pid), encoding="utf-8")
 
     for relative_path, content in fixture.get("write_files", {}).items():
         path = Path(os.getcwd()) / relative_path

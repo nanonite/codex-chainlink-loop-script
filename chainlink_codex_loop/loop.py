@@ -13,6 +13,7 @@ from . import chainlink, codex
 from .gitops import GitError, GitOps
 from .process import run
 from .prompts import findings_prompt, reviewer_prompt, verify_failed_prompt, worker_prompt
+from .state import runtime_log_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class LoopConfig:
     no_merge: bool = False
     schema_path: str | Path | None = None
     progress: Callable[[str], None] | None = None
+    transition: Callable[[int | str, str, int | None, str | None], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -47,9 +49,34 @@ def _notify(config: LoopConfig, message: str) -> None:
         config.progress(message)
 
 
-def _log_path(repo: Path, issue_id: int | str, action: str, attempt: int | None = None) -> Path:
-    suffix = f"-{attempt}" if attempt is not None else ""
-    return repo / ".chainlink-loop" / "logs" / f"issue-{issue_id}-{action}{suffix}.log"
+def _log_path(repo: Path, issue_id: int | str, action: str, attempt: int) -> Path:
+    extension = ".jsonl" if action in {"worker", "review"} else ".log"
+    return runtime_log_path(repo, issue_id, f"{action}-{attempt}{extension}")
+
+
+def _transition(
+    config: LoopConfig,
+    issue_id: int | str,
+    phase: str,
+    attempt: int | None,
+    thread_id: str | None,
+) -> None:
+    if config.transition is not None:
+        config.transition(issue_id, phase, attempt, thread_id)
+
+
+def _write_verify_log(
+    repo: Path,
+    issue_id: int | str,
+    attempt: int,
+    stdout: str,
+    stderr: str,
+) -> None:
+    path = runtime_log_path(repo, issue_id, f"verify-{attempt}.log")
+    content = stdout
+    if stderr:
+        content = f"{content}\n{stderr}" if content else stderr
+    path.write_text(content, encoding="utf-8")
 
 
 def _text(value: str | bytes | None) -> str:
@@ -92,9 +119,10 @@ def run_issue(
         if on_issue_started is not None:
             on_issue_started(issue, git, branch_name)
         _notify(config, f"issue #{issue_id}: starting worker on {branch_name}")
+        _transition(config, issue_id, "worker", 0, None)
         worker = codex.run_worker(
             worker_prompt(issue),
-            _log_path(repo, issue_id, "worker"),
+            _log_path(repo, issue_id, "worker", 1),
             model=config.model,
             timeout=config.timeout,
             repo=repo,
@@ -109,7 +137,9 @@ def run_issue(
             _notify(config, f"issue #{issue_id}: attempt {attempt}/{attempts_limit}")
 
             if config.verify:
+                _transition(config, issue_id, "verify", attempt, thread_id)
                 exit_code, stdout, stderr, timed_out = _verify(config.verify, repo, config.timeout)
+                _write_verify_log(repo, issue_id, attempt, stdout, stderr)
                 if exit_code:
                     output = stdout
                     if stderr:
@@ -124,10 +154,11 @@ def run_issue(
                             f"{reason}: {config.verify}", branch_name, output_tail,
                         )
                     _notify(config, f"issue #{issue_id}: verification failed; asking worker to fix it")
+                    _transition(config, issue_id, "worker", attempt + 1, thread_id)
                     resumed = codex.resume_worker(
                         thread_id,
                         verify_failed_prompt(config.verify, exit_code, output, issue),
-                        _log_path(repo, issue_id, "resume-verify", attempt),
+                        _log_path(repo, issue_id, "worker", attempt + 1),
                         model=config.model,
                         timeout=config.timeout,
                         repo=repo,
@@ -136,6 +167,7 @@ def run_issue(
                     continue
 
             _notify(config, f"issue #{issue_id}: starting fresh reviewer")
+            _transition(config, issue_id, "review", attempt, thread_id)
             verdict = codex.run_reviewer(
                 reviewer_prompt(issue, git.base),
                 schema_path,
@@ -143,6 +175,7 @@ def run_issue(
                 model=config.reviewer_model,
                 timeout=config.timeout,
                 repo=repo,
+                verdict_path=runtime_log_path(repo, issue_id, f"verdict-{attempt}.json"),
             )
             if verdict.get("verdict") == "approved":
                 outcome = "done" if git.has_changes() else "approved-no-changes"
@@ -162,10 +195,11 @@ def run_issue(
                     branch_name,
                 )
             _notify(config, f"issue #{issue_id}: reviewer requested changes; resuming worker")
+            _transition(config, issue_id, "worker", attempt + 1, thread_id)
             resumed = codex.resume_worker(
                 thread_id,
                 findings_prompt(verdict, issue),
-                _log_path(repo, issue_id, "resume-review", attempt),
+                _log_path(repo, issue_id, "worker", attempt + 1),
                 model=config.model,
                 timeout=config.timeout,
                 repo=repo,
@@ -179,7 +213,7 @@ def run_issue(
     except (codex.CodexError, chainlink.ChainlinkError, GitError) as error:
         _notify(config, f"issue #{issue_id}: escalating after error: {error}")
         thread_id = getattr(error, "thread_id", None) or thread_id
-        reason = str(error)
+        reason = "interrupted" if isinstance(error, codex.CodexInterruptedError) else str(error)
         stderr = getattr(error, "stderr", "").strip()
         if stderr and stderr not in reason:
             reason = f"{reason}: {stderr}"
@@ -274,6 +308,7 @@ def run_and_record(issue_id: int | str, config: LoopConfig) -> Outcome | None:
             on_issue_started=record_plan,
             on_thread_started=record_thread,
         )
+        _transition(config, issue_id, "recording", outcome.attempts_used, outcome.thread_id)
         git = git_holder.get("git")
 
         if outcome.outcome == "done":

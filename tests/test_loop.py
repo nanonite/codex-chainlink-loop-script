@@ -140,6 +140,12 @@ class IssueLoopTests(unittest.TestCase):
         self.assertIsNone(result.reason)
         self.assertEqual(self.git(repo, "symbolic-ref", "--short", "HEAD").stdout.strip(), "chainlink/101")
         self.assertTrue(any("attempt 1/3" in message for message in progress))
+        log_dir = repo / ".chainlink-loop" / "logs" / "101"
+        self.assertEqual(
+            {path.name for path in log_dir.iterdir()},
+            {"worker-1.jsonl", "verify-1.log", "review-1.jsonl", "verdict-1.json"},
+        )
+        self.assertEqual(json.loads((log_dir / "verdict-1.json").read_text(encoding="utf-8")), approved)
 
     def test_approved_without_diff_is_approved_no_changes(self) -> None:
         repo = self.make_repo()

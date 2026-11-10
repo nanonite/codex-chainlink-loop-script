@@ -93,6 +93,23 @@ def ensure_clean(repo: str | Path) -> None:
         )
 
 
+def ensure_runtime_ignored(repo: str | Path) -> Path:
+    """Add the tool runtime directory to this repository's private exclude file."""
+    exclude_path_text = _checked(repo, ["rev-parse", "--git-path", "info/exclude"]).strip()
+    exclude_path = Path(exclude_path_text)
+    if not exclude_path.is_absolute():
+        exclude_path = Path(repo) / exclude_path
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = "/.chainlink-loop/"
+    existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
+    if entry not in {line.strip() for line in existing.splitlines()}:
+        with exclude_path.open("a", encoding="utf-8") as output:
+            if existing and not existing.endswith("\n"):
+                output.write("\n")
+            output.write(entry + "\n")
+    return exclude_path
+
+
 def base_branch(repo: str | Path, requested: str | None = None) -> str:
     """Return the requested local base branch or the branch checked out now."""
     current_code, current, current_stderr = _git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"])
@@ -125,6 +142,7 @@ class GitOps:
 
     def __init__(self, repo: str | Path, base: str | None = None) -> None:
         self.repo = Path(repo).expanduser().resolve()
+        ensure_runtime_ignored(self.repo)
         ensure_clean(self.repo)
         self.base = base_branch(self.repo, base)
         self.current_issue_id: int | str | None = None
@@ -168,10 +186,7 @@ class GitOps:
         return bool(_status_paths(self.repo))
 
     def commit_all(self, message: str) -> bool:
-        _checked(
-            self.repo,
-            ["add", "-A", "--", ".", ":(exclude).chainlink-loop"],
-        )
+        _checked(self.repo, ["add", "-A"])
         code, _stdout, stderr = _git(self.repo, ["diff", "--cached", "--quiet"])
         if code == 0:
             return False

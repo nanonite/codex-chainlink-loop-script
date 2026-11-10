@@ -39,6 +39,10 @@ class CodexTimeoutError(CodexError):
     """A Codex process exceeded its configured timeout."""
 
 
+class CodexInterruptedError(CodexError):
+    """A Codex process was stopped after SIGINT or SIGTERM."""
+
+
 class CodexMissingThreadIdError(CodexError):
     """A worker JSONL stream did not contain a valid thread.started event."""
 
@@ -52,6 +56,24 @@ class WorkerResult:
     thread_id: str
     exit_code: int
     last_message: str
+
+
+_ACTIVE_PROCESS: subprocess.Popen[bytes] | None = None
+_ACTIVE_LOCK = threading.Lock()
+_INTERRUPT_REQUESTED = threading.Event()
+
+
+def clear_interrupt() -> None:
+    _INTERRUPT_REQUESTED.clear()
+
+
+def request_interrupt() -> None:
+    """Mark the current run interrupted and kill any active Codex process group."""
+    _INTERRUPT_REQUESTED.set()
+    with _ACTIVE_LOCK:
+        process = _ACTIVE_PROCESS
+    if process is not None:
+        _stop_process_group(process)
 
 
 def _absolute_log_path(log_path: str | Path) -> Path:
@@ -109,6 +131,13 @@ def _stream_command(
             stderr=str(error),
         ) from error
 
+    global _ACTIVE_PROCESS
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCESS = process
+        already_interrupted = _INTERRUPT_REQUESTED.is_set()
+    if already_interrupted:
+        _stop_process_group(process)
+
     assert process.stdin is not None
     assert process.stdout is not None
     assert process.stderr is not None
@@ -154,6 +183,10 @@ def _stream_command(
         timed_out = True
         _stop_process_group(process)
         return_code = process.wait()
+    finally:
+        with _ACTIVE_LOCK:
+            if _ACTIVE_PROCESS is process:
+                _ACTIVE_PROCESS = None
 
     stdin_thread.join()
     stdout_thread.join()
@@ -164,6 +197,13 @@ def _stream_command(
         except OSError:
             pass
     stderr = b"".join(stderr_parts).decode("utf-8", errors="replace")
+    if _INTERRUPT_REQUESTED.is_set():
+        raise CodexInterruptedError(
+            "Codex command interrupted",
+            argv=argv,
+            exit_code=return_code,
+            stderr=stderr,
+        )
     if timed_out:
         raise CodexTimeoutError(
             f"Codex command exceeded timeout of {timeout} seconds",
@@ -195,6 +235,18 @@ def _read_last_message(path: Path, argv: list[str], stderr: str) -> str:
             exit_code=0,
             stderr=stderr,
         ) from error
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _remove_output(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _raise_nonzero(
@@ -244,10 +296,15 @@ def run_worker(
             timeout=timeout,
             on_stdout_line=parse_line,
         )
-    except CodexTimeoutError as error:
+    except (CodexTimeoutError, CodexInterruptedError) as error:
         error.thread_id = thread_ids[0] if thread_ids else None
+        _remove_output(last_path)
         raise
-    _raise_nonzero(argv, exit_code, stderr, thread_ids[0] if thread_ids else None)
+    try:
+        _raise_nonzero(argv, exit_code, stderr, thread_ids[0] if thread_ids else None)
+    except CodexExecutionError:
+        _remove_output(last_path)
+        raise
     if not thread_ids:
         raise CodexMissingThreadIdError(
             "Codex worker output did not contain a thread.started event with thread_id",
@@ -289,10 +346,15 @@ def resume_worker(
             timeout=timeout,
             on_stdout_line=parse_line,
         )
-    except CodexTimeoutError as error:
+    except (CodexTimeoutError, CodexInterruptedError) as error:
         error.thread_id = thread_id
+        _remove_output(last_path)
         raise
-    _raise_nonzero(argv, exit_code, stderr, thread_id)
+    try:
+        _raise_nonzero(argv, exit_code, stderr, thread_id)
+    except CodexExecutionError:
+        _remove_output(last_path)
+        raise
     if not resumed_ids:
         raise CodexMissingThreadIdError(
             "Codex resume output did not contain a thread.started event with thread_id",
@@ -364,14 +426,16 @@ def run_reviewer(
     model: str | None = None,
     timeout: float | None = None,
     repo: str | Path | None = None,
+    verdict_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run a new read-only reviewer and validate its structured response."""
     log = _absolute_log_path(log_path)
-    verdict_path = _output_path(log, "verdict")
+    verdict_output = Path(verdict_path).expanduser().resolve() if verdict_path else _output_path(log, "verdict")
+    verdict_output.parent.mkdir(parents=True, exist_ok=True)
     schema = Path(schema_path).expanduser().resolve()
     argv = [
         "codex", "exec", "-s", "read-only", "--output-schema", str(schema),
-        "-o", str(verdict_path),
+        "-o", str(verdict_output),
     ]
     if model:
         argv.extend(["-m", model])
@@ -385,7 +449,7 @@ def run_reviewer(
     )
     _raise_nonzero(argv, exit_code, stderr)
     try:
-        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        verdict = json.loads(verdict_output.read_text(encoding="utf-8"))
         schema_value = json.loads(schema.read_text(encoding="utf-8"))
         if not isinstance(verdict, dict) or not isinstance(schema_value, dict):
             raise ValueError("verdict and schema must both be JSON objects")
