@@ -63,6 +63,34 @@ class WorkspaceLock:
         self._held = True
         return self
 
+    @staticmethod
+    def check_available(repo: str | Path) -> None:
+        """Check an existing lock without creating the runtime directory or lock file."""
+        path = Path(repo).expanduser().resolve() / ".chainlink-loop" / "lock"
+        if not path.exists():
+            return
+        try:
+            lock_file = path.open("r", encoding="utf-8")
+        except OSError as error:
+            raise WorkspaceLockError(f"Could not inspect workspace lock {path}: {error}") from error
+        try:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                owner = lock_file.read().strip() or "unknown"
+                raise WorkspaceLockError(
+                    f"Another chainlink-codex-loop process holds the workspace lock (pid {owner})"
+                ) from error
+            except OSError as error:
+                raise WorkspaceLockError(f"Could not inspect workspace lock {path}: {error}") from error
+            finally:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+        finally:
+            lock_file.close()
+
     def release(self) -> None:
         if not self._held:
             return

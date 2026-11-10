@@ -86,6 +86,35 @@ def _output_path(log_path: Path, suffix: str) -> Path:
     return log_path.with_name(f"{log_path.name}.{suffix}")
 
 
+def worker_argv(log_path: str | Path, model: str | None = None) -> list[str]:
+    """Build the exact argv for a new worker without creating any files."""
+    log = Path(log_path).expanduser().resolve()
+    last_path = _output_path(log, "last-message")
+    argv = ["codex", "exec", "--json", "-s", "workspace-write"]
+    if model:
+        argv.extend(["-m", model])
+    argv.extend(["-o", str(last_path), "-"])
+    return argv
+
+
+def reviewer_argv(
+    schema_path: str | Path,
+    verdict_path: str | Path,
+    model: str | None = None,
+) -> list[str]:
+    """Build the exact argv for a fresh read-only reviewer without writing files."""
+    schema = Path(schema_path).expanduser().resolve()
+    verdict = Path(verdict_path).expanduser().resolve()
+    argv = [
+        "codex", "exec", "-s", "read-only", "--output-schema", str(schema),
+        "-o", str(verdict),
+    ]
+    if model:
+        argv.extend(["-m", model])
+    argv.append("-")
+    return argv
+
+
 def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
     try:
         if os.name == "posix":
@@ -276,10 +305,7 @@ def run_worker(
     """Start a workspace-write Codex worker and return its thread id/message."""
     log = _absolute_log_path(log_path)
     last_path = _output_path(log, "last-message")
-    argv = ["codex", "exec", "--json", "-s", "workspace-write"]
-    if model:
-        argv.extend(["-m", model])
-    argv.extend(["-o", str(last_path), "-"])
+    argv = worker_argv(log, model)
     thread_ids: list[str] = []
 
     def parse_line(line: str) -> None:
@@ -433,13 +459,7 @@ def run_reviewer(
     verdict_output = Path(verdict_path).expanduser().resolve() if verdict_path else _output_path(log, "verdict")
     verdict_output.parent.mkdir(parents=True, exist_ok=True)
     schema = Path(schema_path).expanduser().resolve()
-    argv = [
-        "codex", "exec", "-s", "read-only", "--output-schema", str(schema),
-        "-o", str(verdict_output),
-    ]
-    if model:
-        argv.extend(["-m", model])
-    argv.append("-")
+    argv = reviewer_argv(schema, verdict_output, model)
     exit_code, stderr = _stream_command(
         argv,
         prompt,

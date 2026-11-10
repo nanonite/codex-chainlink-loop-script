@@ -1,11 +1,32 @@
-"""Command-line interface for chainlink-codex-loop."""
+"""Command-line entry point for chainlink-codex-loop."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Sequence
+
+from . import backlog, codex
+from .backlog import SelectionConfig
+from .chainlink import ChainlinkError
+from .gitops import DirtyWorktreeError, GitError, base_branch, ensure_clean
+from .loop import LoopConfig, Outcome, run_and_record
+from .state import (
+    InterruptController,
+    RunState,
+    WorkspaceLock,
+    WorkspaceLockError,
+    print_summary,
+    process_exit_code,
+)
+
+
+def _progress(message: str) -> None:
+    print(message, file=sys.stdout, flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,9 +59,196 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parse_args(argv)
+def _preflight(args: argparse.Namespace) -> tuple[list[str], list[str]]:
+    """Check prerequisites without changing the target repository."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    for executable in ("codex", "chainlink"):
+        if shutil.which(executable) is None:
+            errors.append(f"{executable} is not on PATH")
+
+    repo: Path = args.repo
+    if not repo.is_dir():
+        errors.append(f"target repository does not exist or is not a directory: {repo}")
+    else:
+        db_path = repo / ".chainlink" / "issues.db"
+        if not db_path.is_file():
+            errors.append(f"Chainlink database not found: {db_path}")
+
+        valid_worktree = False
+        try:
+            ensure_clean(repo)
+            valid_worktree = True
+        except DirtyWorktreeError as error:
+            valid_worktree = True
+            if args.dry_run:
+                warnings.append(f"dry-run target has a dirty work tree: {error}")
+            else:
+                errors.append(str(error))
+        except (GitError, OSError) as error:
+            errors.append(f"target must be a Git work tree: {error}")
+        if valid_worktree:
+            try:
+                base_branch(repo, args.base)
+            except (GitError, OSError) as error:
+                errors.append(f"invalid base branch: {error}")
+
+        try:
+            WorkspaceLock.check_available(repo)
+        except WorkspaceLockError as error:
+            errors.append(str(error))
+
+    if args.attempts < 1:
+        errors.append("--attempts must be at least 1")
+    if args.max_issues is not None and args.max_issues < 1:
+        errors.append("--max-issues must be at least 1")
+    if args.timeout is not None and args.timeout <= 0:
+        errors.append("--timeout must be greater than 0")
+    if args.priority is not None and args.priority not in backlog.PRIORITY_ORDER:
+        errors.append(f"unknown priority {args.priority!r}; use critical, high, medium, or low")
+    return errors, warnings
+
+
+def _selection_config(args: argparse.Namespace, progress=None, *, check_locks: bool = True) -> SelectionConfig:
+    return SelectionConfig(
+        repo=args.repo,
+        explicit_ids=args.ids,
+        backlog=args.backlog,
+        label=args.label,
+        priority=args.priority,
+        max_issues=args.max_issues,
+        progress=progress or _progress,
+        check_locks=check_locks,
+    )
+
+
+def _preview_paths(repo: Path, issue_id: int | str) -> tuple[Path, Path, Path]:
+    log_dir = repo / ".chainlink-loop" / "logs" / str(issue_id)
+    worker_log = log_dir / "worker-1.jsonl"
+    review_log = log_dir / "review-1.jsonl"
+    verdict_path = log_dir / "verdict-1.json"
+    return worker_log, review_log, verdict_path
+
+
+def _print_preview(args: argparse.Namespace, issues: list[dict[str, object]]) -> None:
+    repo: Path = args.repo
+    schema = Path(__file__).parent / "schemas" / "verdict.json"
+    for index, issue in enumerate(issues):
+        if index:
+            print()
+        issue_id = issue.get("id", "unknown")
+        worker_log, review_log, verdict_path = _preview_paths(repo, issue_id)
+        worker_argv = codex.worker_argv(worker_log, args.model)
+        reviewer_argv = codex.reviewer_argv(schema, verdict_path, args.reviewer_model)
+        print(f"Issue #{issue_id}: {issue.get('title', '')}")
+        print(f"  priority: {issue.get('priority', 'unknown')}")
+        print(f"  branch: chainlink/{issue_id}")
+        print(f"  worker argv: {json.dumps(worker_argv, ensure_ascii=False)}")
+        print(f"  reviewer argv: {json.dumps(reviewer_argv, ensure_ascii=False)}")
+        print(f"  verify command: {args.verify if args.verify is not None else 'none'}")
+    if not issues:
+        print("No eligible issues selected.")
+
+
+def _dry_run(args: argparse.Namespace) -> int:
+    try:
+        # Chainlink 0.2.0's locks list fetches its Git-backed remote cache, so
+        # a nominally read-only query can write inside the target repository.
+        # Keep previews side-effect free and report that locks are not checked.
+        issues = list(backlog.select_issues(_selection_config(args, check_locks=False)))
+    except (ChainlinkError, ValueError, OSError) as error:
+        print(f"error: could not select issues: {error}", file=sys.stderr)
+        return 2
+    print("Remote Chainlink issue locks: not checked during dry-run.")
+    _print_preview(args, issues)
     return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    config = LoopConfig(
+        repo=args.repo,
+        attempts=args.attempts,
+        verify=args.verify,
+        base=args.base,
+        no_merge=args.no_merge,
+        model=args.model,
+        reviewer_model=args.reviewer_model,
+        timeout=args.timeout,
+        progress=_progress,
+    )
+    state = RunState(args.repo)
+    outcomes: list[Outcome] = []
+    runtime_error = False
+
+    try:
+        workspace_lock = WorkspaceLock(args.repo)
+        with workspace_lock:
+            with InterruptController() as interrupt:
+                state.start_run(config)
+
+                def transition(
+                    issue_id: int | str,
+                    phase: str,
+                    attempt: int | None,
+                    thread_id: str | None,
+                ) -> None:
+                    state.transition(issue_id, phase, attempt, thread_id)
+                    attempt_text = "-" if attempt is None else str(attempt)
+                    _progress(
+                        f"issue #{issue_id}: phase={phase} attempt={attempt_text} outcome=running"
+                    )
+
+                config.transition = transition
+                selection = iter(backlog.select_issues(_selection_config(args)))
+                try:
+                    while not interrupt.interrupted:
+                        try:
+                            issue = next(selection)
+                        except StopIteration:
+                            break
+                        issue_id = issue.get("id")
+                        if issue_id is None:
+                            print("warning: selected Chainlink issue has no id; skipped", file=sys.stderr)
+                            continue
+                        outcome = run_and_record(issue_id, config)
+                        if outcome is None:
+                            continue
+                        outcomes.append(outcome)
+                        state.finish_issue(issue_id, outcome)
+                        _progress(
+                            f"issue #{issue_id}: phase=finished attempt={outcome.attempts_used} "
+                            f"outcome={outcome.outcome}"
+                        )
+                except (ChainlinkError, ValueError, OSError) as error:
+                    print(f"error: could not continue issue selection: {error}", file=sys.stderr)
+                    runtime_error = True
+                finally:
+                    state.finish_run()
+                    print_summary(outcomes, stream=sys.stdout)
+
+                if runtime_error:
+                    return 2
+                return process_exit_code(
+                    outcomes,
+                    interrupted=interrupt.interrupted,
+                )
+    except (WorkspaceLockError, GitError, OSError) as error:
+        print(f"error: preflight or workspace setup failed: {error}", file=sys.stderr)
+        return 2
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    errors, warnings = _preflight(args)
+    for warning in warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    if errors:
+        for error in errors:
+            print(f"error: {error}", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        return _dry_run(args)
+    return _run(args)
 
 
 if __name__ == "__main__":

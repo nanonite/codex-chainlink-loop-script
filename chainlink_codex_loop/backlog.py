@@ -22,6 +22,7 @@ class SelectionConfig:
     priority: str | None = None
     max_issues: int | None = None
     progress: Callable[[str], None] | None = None
+    check_locks: bool = True
 
 
 def _key(issue_id: int | str) -> str:
@@ -76,7 +77,7 @@ def _iter_explicit(
         if issue.get("status") != "open":
             _notify(config, f"issue #{issue_id}: status is {issue.get('status')!r}; skipped")
             continue
-        if _locked(issue_id, config):
+        if config.check_locks and _locked(issue_id, config):
             _notify(config, f"issue #{issue_id}: locked by another agent; skipped")
             continue
         attempted.add(key)
@@ -113,7 +114,7 @@ def _iter_backlog(
         selected: dict[str, Any] | None = None
         for issue in candidates:
             issue_id = issue.get("id")
-            if _locked(issue_id, config):
+            if config.check_locks and _locked(issue_id, config):
                 _notify(config, f"issue #{issue_id}: locked by another agent; skipped")
                 continue
             selected = issue
