@@ -26,6 +26,9 @@ class LoopConfig:
     base: str | None = None
     model: str | None = None
     reviewer_model: str | None = None
+    effort: str | None = None
+    reviewer_effort: str | None = None
+    reviewer_sandbox: str = codex.DEFAULT_REVIEWER_SANDBOX
     timeout: float | None = None
     no_merge: bool = False
     schema_path: str | Path | None = None
@@ -125,6 +128,7 @@ def run_issue(
             worker_prompt(issue),
             _log_path(repo, issue_id, "worker", 1),
             model=config.model,
+            effort=config.effort,
             timeout=config.timeout,
             repo=repo,
         )
@@ -137,10 +141,17 @@ def run_issue(
             attempts_used = attempt
             _notify(config, f"issue #{issue_id}: attempt {attempt}/{attempts_limit}")
 
+            verify_evidence: dict[str, Any] | None = None
             if config.verify:
                 _transition(config, issue_id, "verify", attempt, thread_id)
                 exit_code, stdout, stderr, timed_out = _verify(config.verify, repo, config.timeout)
                 _write_verify_log(repo, issue_id, attempt, stdout, stderr)
+                if not exit_code:
+                    verify_evidence = {
+                        "command": config.verify,
+                        "exit_code": exit_code,
+                        "output": f"{stdout}\n{stderr}" if stdout and stderr else stdout or stderr,
+                    }
                 if exit_code:
                     output = stdout
                     if stderr:
@@ -161,6 +172,7 @@ def run_issue(
                         verify_failed_prompt(config.verify, exit_code, output, issue),
                         _log_path(repo, issue_id, "worker", attempt + 1),
                         model=config.model,
+                        effort=config.effort,
                         timeout=config.timeout,
                         repo=repo,
                     )
@@ -169,15 +181,37 @@ def run_issue(
 
             _notify(config, f"issue #{issue_id}: starting fresh reviewer")
             _transition(config, issue_id, "review", attempt, thread_id)
-            verdict = codex.run_reviewer(
-                reviewer_prompt(issue, git.base),
-                schema_path,
-                _log_path(repo, issue_id, "review", attempt),
-                model=config.reviewer_model,
-                timeout=config.timeout,
-                repo=repo,
-                verdict_path=runtime_log_path(repo, issue_id, f"verdict-{attempt}.json"),
-            )
+            reviewer_can_write = config.reviewer_sandbox != "read-only"
+            # A reviewer that can run tests can also write files. Whatever it
+            # changes must not reach the commit or the worker's next turn.
+            reviewed_tree = git.snapshot_tree() if reviewer_can_write else None
+            try:
+                verdict = codex.run_reviewer(
+                    reviewer_prompt(
+                        issue,
+                        git.base,
+                        can_run_commands=reviewer_can_write,
+                        verify=verify_evidence,
+                    ),
+                    schema_path,
+                    _log_path(repo, issue_id, "review", attempt),
+                    model=config.reviewer_model,
+                    effort=config.reviewer_effort,
+                    timeout=config.timeout,
+                    repo=repo,
+                    verdict_path=runtime_log_path(repo, issue_id, f"verdict-{attempt}.json"),
+                    sandbox=config.reviewer_sandbox,
+                )
+            finally:
+                if reviewed_tree is not None:
+                    discarded = git.restore_tree(reviewed_tree)
+                    if discarded:
+                        _notify(
+                            config,
+                            f"issue #{issue_id}: discarded reviewer changes to "
+                            + ", ".join(discarded[:10])
+                            + (" and others" if len(discarded) > 10 else ""),
+                        )
             if verdict.get("verdict") == "approved":
                 outcome = "done" if git.has_changes() else "approved-no-changes"
                 return Outcome(outcome, attempts_used, thread_id, verdict, None, branch_name)
@@ -202,6 +236,7 @@ def run_issue(
                 findings_prompt(verdict, issue),
                 _log_path(repo, issue_id, "worker", attempt + 1),
                 model=config.model,
+                effort=config.effort,
                 timeout=config.timeout,
                 repo=repo,
             )

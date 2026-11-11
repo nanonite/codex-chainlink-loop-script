@@ -29,6 +29,8 @@ from .state import (
 
 DEFAULT_TIMEOUT_SECONDS = 3600.0
 
+EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
 
 def _progress(message: str) -> None:
     print(message, file=sys.stdout, flush=True)
@@ -52,6 +54,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-merge", action="store_true")
     parser.add_argument("--model", metavar="M")
     parser.add_argument("--reviewer-model", metavar="M")
+    parser.add_argument(
+        "--effort", metavar="E", choices=EFFORTS,
+        help="worker reasoning effort: " + ", ".join(EFFORTS),
+    )
+    parser.add_argument(
+        "--reviewer-effort", metavar="E", choices=EFFORTS,
+        help="reviewer reasoning effort: " + ", ".join(EFFORTS),
+    )
+    parser.add_argument(
+        "--reviewer-sandbox",
+        choices=codex.REVIEWER_SANDBOXES,
+        default=codex.DEFAULT_REVIEWER_SANDBOX,
+        help=(
+            "Codex sandbox for the reviewer (default workspace-write, so it can run tests; "
+            "its changes to the work tree are discarded)"
+        ),
+    )
     parser.add_argument(
         "--timeout",
         type=float,
@@ -157,8 +176,11 @@ def _print_preview(args: argparse.Namespace, issues: list[dict[str, object]]) ->
             print()
         issue_id = issue.get("id", "unknown")
         worker_log, review_log, verdict_path = _preview_paths(repo, issue_id)
-        worker_argv = codex.worker_argv(worker_log, args.model)
-        reviewer_argv = codex.reviewer_argv(schema, verdict_path, args.reviewer_model)
+        worker_argv = codex.worker_argv(worker_log, args.model, args.effort)
+        reviewer_argv = codex.reviewer_argv(
+            schema, verdict_path, args.reviewer_model, args.reviewer_effort,
+            args.reviewer_sandbox,
+        )
         print(f"Issue #{issue_id}: {issue.get('title', '')}")
         print(f"  priority: {issue.get('priority', 'unknown')}")
         print(f"  branch: chainlink/{issue_id}")
@@ -205,6 +227,9 @@ def _run(args: argparse.Namespace) -> int:
         no_merge=args.no_merge,
         model=args.model,
         reviewer_model=args.reviewer_model,
+        effort=args.effort,
+        reviewer_effort=args.reviewer_effort,
+        reviewer_sandbox=args.reviewer_sandbox,
         timeout=args.timeout or None,
         progress=_progress,
     )

@@ -140,7 +140,7 @@ class CliIntegrationTests(unittest.TestCase):
             "-o", str(self.repo / ".chainlink-loop" / "logs" / "301" / "worker-1.jsonl.last-message"), "-",
         ]
         reviewer_argv = [
-            "codex", "exec", "-s", "read-only", "--output-schema",
+            "codex", "exec", "-s", "workspace-write", "--output-schema",
             str(ROOT / "chainlink_codex_loop" / "schemas" / "verdict.json"),
             "-o", str(self.repo / ".chainlink-loop" / "logs" / "301" / "verdict-1.json"),
             "-m", "review-model", "-",

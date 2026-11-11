@@ -100,7 +100,7 @@ class CodexAdapterTests(unittest.TestCase):
             )
         self.assertEqual(result, verdict)
         record = self.records_for_codex()[0]
-        self.assertEqual(record["argv"][:3], ["exec", "-s", "read-only"])
+        self.assertEqual(record["argv"][:3], ["exec", "-s", "workspace-write"])
         self.assertIn("--output-schema", record["argv"])
         self.assertIn(str(SCHEMA), record["argv"])
         self.assertNotIn("resume", record["argv"])

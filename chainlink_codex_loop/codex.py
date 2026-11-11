@@ -86,13 +86,23 @@ def _output_path(log_path: Path, suffix: str) -> Path:
     return log_path.with_name(f"{log_path.name}.{suffix}")
 
 
-def worker_argv(log_path: str | Path, model: str | None = None) -> list[str]:
+# The reviewer needs a writable sandbox to run tests and type checkers, which
+# write caches and temporary files. The loop discards whatever it changes.
+REVIEWER_SANDBOXES = ("workspace-write", "read-only")
+DEFAULT_REVIEWER_SANDBOX = "workspace-write"
+
+
+def worker_argv(
+    log_path: str | Path, model: str | None = None, effort: str | None = None
+) -> list[str]:
     """Build the exact argv for a new worker without creating any files."""
     log = Path(log_path).expanduser().resolve()
     last_path = _output_path(log, "last-message")
     argv = ["codex", "exec", "--json", "-s", "workspace-write"]
     if model:
         argv.extend(["-m", model])
+    if effort:
+        argv.extend(["-c", f"model_reasoning_effort={effort}"])
     argv.extend(["-o", str(last_path), "-"])
     return argv
 
@@ -101,16 +111,22 @@ def reviewer_argv(
     schema_path: str | Path,
     verdict_path: str | Path,
     model: str | None = None,
+    effort: str | None = None,
+    sandbox: str = DEFAULT_REVIEWER_SANDBOX,
 ) -> list[str]:
-    """Build the exact argv for a fresh read-only reviewer without writing files."""
+    """Build the exact argv for a fresh reviewer without writing files."""
+    if sandbox not in REVIEWER_SANDBOXES:
+        raise ValueError(f"unsupported reviewer sandbox {sandbox!r}")
     schema = Path(schema_path).expanduser().resolve()
     verdict = Path(verdict_path).expanduser().resolve()
     argv = [
-        "codex", "exec", "-s", "read-only", "--output-schema", str(schema),
+        "codex", "exec", "-s", sandbox, "--output-schema", str(schema),
         "-o", str(verdict),
     ]
     if model:
         argv.extend(["-m", model])
+    if effort:
+        argv.extend(["-c", f"model_reasoning_effort={effort}"])
     argv.append("-")
     return argv
 
@@ -301,11 +317,12 @@ def run_worker(
     model: str | None = None,
     timeout: float | None = None,
     repo: str | Path | None = None,
+    effort: str | None = None,
 ) -> WorkerResult:
     """Start a workspace-write Codex worker and return its thread id/message."""
     log = _absolute_log_path(log_path)
     last_path = _output_path(log, "last-message")
-    argv = worker_argv(log, model)
+    argv = worker_argv(log, model, effort)
     thread_ids: list[str] = []
 
     def parse_line(line: str) -> None:
@@ -348,6 +365,7 @@ def resume_worker(
     model: str | None = None,
     timeout: float | None = None,
     repo: str | Path | None = None,
+    effort: str | None = None,
 ) -> WorkerResult:
     """Resume the original workspace-write worker session."""
     log = _absolute_log_path(log_path)
@@ -355,6 +373,8 @@ def resume_worker(
     argv = ["codex", "exec", "resume", thread_id, "--json"]
     if model:
         argv.extend(["-m", model])
+    if effort:
+        argv.extend(["-c", f"model_reasoning_effort={effort}"])
     argv.extend(["-o", str(last_path), "-"])
     resumed_ids: list[str] = []
 
@@ -453,13 +473,15 @@ def run_reviewer(
     timeout: float | None = None,
     repo: str | Path | None = None,
     verdict_path: str | Path | None = None,
+    effort: str | None = None,
+    sandbox: str = DEFAULT_REVIEWER_SANDBOX,
 ) -> dict[str, Any]:
-    """Run a new read-only reviewer and validate its structured response."""
+    """Run a new reviewer session and validate its structured response."""
     log = _absolute_log_path(log_path)
     verdict_output = Path(verdict_path).expanduser().resolve() if verdict_path else _output_path(log, "verdict")
     verdict_output.parent.mkdir(parents=True, exist_ok=True)
     schema = Path(schema_path).expanduser().resolve()
-    argv = reviewer_argv(schema, verdict_output, model)
+    argv = reviewer_argv(schema, verdict_output, model, effort, sandbox)
     exit_code, stderr = _stream_command(
         argv,
         prompt,

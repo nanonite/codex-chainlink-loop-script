@@ -75,6 +75,9 @@ This is the flag set printed by `chainlink-codex-loop --help`:
 | `--no-merge` | Commit approved changes on the issue branch but do not merge them into the base branch. A `done` issue is still recorded and closed. |
 | `--model M` | Codex model for worker turns. Defaults to the Codex CLI configuration. |
 | `--reviewer-model M` | Codex model for fresh reviewer turns. Defaults to the Codex CLI configuration. |
+| `--effort E` | Reasoning effort for worker turns, including resumed ones: `minimal`, `low`, `medium`, `high`, or `xhigh`. Passed to Codex as `-c model_reasoning_effort=E`. Defaults to the Codex CLI configuration. |
+| `--reviewer-effort E` | Reasoning effort for fresh reviewer turns, same values. Defaults to the Codex CLI configuration. |
+| `--reviewer-sandbox MODE` | Codex sandbox for the reviewer: `workspace-write` (default) lets it run tests and discards its changes to the work tree; `read-only` limits it to reading. |
 | `--timeout SECONDS` | Limit for each Codex run and each verification run. Defaults to 3600. `0` disables the limit. |
 | `--dry-run` | Perform read-only preflight and selection, then print the proposed branch and worker/reviewer argv. Dirty trees are reported as warnings. |
 | `-h`, `--help` | Print the flag list and exit. |
@@ -135,7 +138,8 @@ Exit codes are:
 - A normal run requires a clean target work tree. Fix or commit existing changes before starting. Dry-run permits a dirty tree and prints a warning.
 - Each issue gets a `chainlink/<id>` branch. The loop commits work on that branch; it does not commit directly to the base branch.
 - `--no-merge` still closes a reviewer-approved `done` issue. The committed branch remains available for a later manual merge.
-- Worker commands run with Codex `workspace-write`; reviewer commands run with `read-only`.
+- Worker and reviewer both run in the Codex `workspace-write` sandbox. The reviewer needs it to run tests and type checkers, which write caches. The loop snapshots the work tree before each review and restores it afterwards, so nothing the reviewer changes (outside git-ignored paths) reaches the worker or the commit. `--reviewer-sandbox read-only` restores the stricter mode, in which the reviewer can only read.
+- When `--verify` passes, its command, exit code and last 60 output lines are given to the reviewer as established evidence, and the reviewer is told that being unable to run something itself is not grounds for requesting changes.
 - Only one loop can hold the target workspace lock. Chainlink's per-issue lock is separate and may be unavailable when the target has no agent identity or lock backend.
 - The control flow is ordinary Python. The model chooses code changes and review findings, not which issue the loop selects, whether findings count as approval, or whether attempts remain.
 

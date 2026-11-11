@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 from .process import run
@@ -288,6 +291,53 @@ class GitOps:
         self.current_issue_id = None
         self.current_issue_title = ""
         return branch
+
+    def snapshot_tree(self) -> str:
+        """Return a tree id for the current work tree without touching the real index.
+
+        Ignored files (caches, build output, loop runtime state) are left out.
+        """
+        with tempfile.TemporaryDirectory(prefix="chainlink-loop-index-") as directory:
+            environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+            tree = ""
+            for args in (["read-tree", "HEAD"], ["add", "-A"], ["write-tree"]):
+                argv = ["git", *args]
+                result = subprocess.run(
+                    argv,
+                    cwd=self.repo,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode:
+                    raise GitError(
+                        f"Could not snapshot the work tree: {' '.join(argv)}",
+                        argv=argv,
+                        exit_code=result.returncode,
+                        stderr=result.stderr,
+                    )
+                tree = result.stdout.strip()
+            return tree
+
+    def restore_tree(self, tree: str) -> list[str]:
+        """Put the work tree back to ``tree``; return the paths that had drifted."""
+        current = self.snapshot_tree()
+        if current == tree:
+            return []
+        fields = _checked(
+            self.repo, ["diff", "--name-status", "--no-renames", "-z", tree, current]
+        ).split("\0")
+        changes = list(zip(fields[0::2], fields[1::2]))
+        added = [path for status, path in changes if status == "A"]
+        altered = [path for status, path in changes if status != "A"]
+        for path in added:
+            (self.repo / path).unlink(missing_ok=True)
+        # Batches keep the argv short enough for any repository.
+        for start in range(0, len(altered), 200):
+            batch = altered[start : start + 200]
+            _checked(self.repo, ["restore", f"--source={tree}", "--worktree", "--", *batch])
+        return [path for _status, path in changes]
 
     def branch_head(self, branch: str) -> str:
         """Return the commit currently referenced by a local branch."""

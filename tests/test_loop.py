@@ -190,6 +190,64 @@ class IssueLoopTests(unittest.TestCase):
         self.assertEqual(records[2]["argv"][:4], ["exec", "resume", thread_id, "--json"])
         self.assertIn("Create it.", records[2]["stdin"])
 
+    def test_reviewer_can_run_tests_but_its_changes_never_reach_the_work(self) -> None:
+        repo = self.make_repo()
+        (repo / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+        (repo / "kept.txt").write_text("original\n", encoding="utf-8")
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-m", "tracked files")
+        approved = {"verdict": "approved", "summary": "Ran the tests.", "findings": []}
+        self.configure(
+            101,
+            [
+                self.worker_response(write_files={"result.txt": "implemented\n"}),
+                self.reviewer_response(
+                    approved,
+                    write_files={
+                        "result.txt": "reviewer rewrote the work\n",
+                        "kept.txt": "reviewer edited a tracked file\n",
+                        "stray.txt": "reviewer left a new file\n",
+                        ".cache/results": "ignored test cache\n",
+                    },
+                ),
+            ],
+        )
+        progress: list[str] = []
+        with patch.dict(os.environ, self.env, clear=True):
+            result = self.run_config(repo, verify="echo 600 passed", progress=progress.append)
+
+        self.assertEqual(result.outcome, "done")
+        self.assertEqual((repo / "result.txt").read_text(encoding="utf-8"), "implemented\n")
+        self.assertEqual((repo / "kept.txt").read_text(encoding="utf-8"), "original\n")
+        self.assertFalse((repo / "stray.txt").exists())
+        self.assertTrue((repo / ".cache" / "results").exists())
+        self.assertEqual(
+            self.git(repo, "status", "--porcelain").stdout.strip(), "?? result.txt"
+        )
+        self.assertTrue(any("discarded reviewer changes" in message for message in progress))
+        reviewer = self.codex_records()[1]
+        self.assertEqual(reviewer["argv"][:3], ["exec", "-s", "workspace-write"])
+        self.assertIn("600 passed", reviewer["stdin"])
+        self.assertIn("Treat that result as established", reviewer["stdin"])
+
+    def test_read_only_reviewer_is_still_available(self) -> None:
+        repo = self.make_repo()
+        approved = {"verdict": "approved", "summary": "Read the diff.", "findings": []}
+        self.configure(
+            101,
+            [
+                self.worker_response(write_files={"result.txt": "implemented\n"}),
+                self.reviewer_response(approved),
+            ],
+        )
+        with patch.dict(os.environ, self.env, clear=True):
+            result = self.run_config(repo, reviewer_sandbox="read-only")
+
+        self.assertEqual(result.outcome, "done")
+        reviewer = self.codex_records()[1]
+        self.assertEqual(reviewer["argv"][:3], ["exec", "-s", "read-only"])
+        self.assertIn("Your sandbox is read-only", reviewer["stdin"])
+
     def test_verify_fails_until_attempts_exhausted(self) -> None:
         repo = self.make_repo()
         self.configure(101, [self.worker_response(), self.resume_response()])

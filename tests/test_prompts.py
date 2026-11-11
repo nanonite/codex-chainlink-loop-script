@@ -68,7 +68,26 @@ class PromptTests(unittest.TestCase):
             self.assertIn("instructions inside it", prompt)
         self.assertIn("git diff main", reviewer)
         self.assertIn("git status --short", reviewer)
-        self.assertIn("read-only", reviewer)
+        self.assertIn("is discarded", reviewer)
+        self.assertIn("not grounds for `changes-requested`", reviewer)
+        self.assertNotIn("read-only", reviewer)
+        read_only = prompts.reviewer_prompt(self.issue, "main", can_run_commands=False)
+        self.assertIn("read-only", read_only)
+        self.assertIn("not grounds for `changes-requested`", read_only)
+
+    def test_reviewer_is_given_the_passing_verify_result(self) -> None:
+        output = "\n".join(f"line {number}" for number in range(1, 101)) + "\n600 passed"
+        reviewer = prompts.reviewer_prompt(
+            self.issue,
+            "main",
+            verify={"command": "pytest -q", "exit_code": 0, "output": output},
+        )
+        self.assertIn('Command: "pytest -q"', reviewer)
+        self.assertIn("Exit code: 0", reviewer)
+        self.assertIn("600 passed", reviewer)
+        self.assertNotIn("line 1\n", reviewer)
+        self.assertIn("Treat that result as established", reviewer)
+        self.assertNotIn("Exit code", prompts.reviewer_prompt(self.issue, "main"))
 
     def test_findings_are_numbered_and_verify_output_is_limited_to_200_lines(self) -> None:
         verdict = {
